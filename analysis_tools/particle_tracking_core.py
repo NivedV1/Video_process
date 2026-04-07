@@ -150,9 +150,135 @@ def preprocess_tracking_image(
 ) -> np.ndarray:
     if mode == "ring":
         return compute_gradient_feature(image, blur_size)
+    if mode == "dark_center":
+        blur_size = ensure_odd(max(3, blur_size))
+        blurred = cv2.GaussianBlur(image, (blur_size, blur_size), 0).astype(np.float32)
+        return float(np.max(blurred)) - blurred
 
     blur_size = ensure_odd(max(3, blur_size))
     return cv2.GaussianBlur(image, (blur_size, blur_size), 0).astype(np.float32)
+
+
+def fit_dark_center(
+    gray_frame: np.ndarray,
+    previous_point: Point,
+    expected_radius: float,
+    roi_radius: int,
+    blur_size: int,
+    refine_radius: int,
+    min_contrast: float,
+) -> Tuple[Point, float, dict[str, float]]:
+    search_roi, x_min, y_min = crop_square(gray_frame, previous_point, roi_radius)
+    if search_roi.size == 0 or min(search_roi.shape[:2]) < 7:
+        raise RuntimeError("Search window is too small for dark-center fitting.")
+
+    blur_size = ensure_odd(max(3, blur_size))
+    blurred = cv2.GaussianBlur(search_roi, (blur_size, blur_size), 0).astype(np.float32)
+    darkness = float(np.max(blurred)) - blurred
+    roi_center_x = float(previous_point[0] - x_min)
+    roi_center_y = float(previous_point[1] - y_min)
+    yy, xx = np.indices(darkness.shape)
+    inner_radius = max(3.0, expected_radius * 0.75)
+    inner_mask = ((xx - roi_center_x) ** 2 + (yy - roi_center_y) ** 2) <= inner_radius ** 2
+    if not np.any(inner_mask):
+        raise RuntimeError("Dark-center inner mask is empty.")
+
+    masked_values = darkness[inner_mask]
+    percentile_threshold = float(np.percentile(masked_values, 60))
+    mean_threshold = float(masked_values.mean() + 0.10 * masked_values.std())
+    threshold_value = max(percentile_threshold, mean_threshold)
+    binary = np.zeros_like(darkness, dtype=np.uint8)
+    binary[(darkness >= threshold_value) & inner_mask] = 255
+    kernel_size = ensure_odd(max(3, int(round(expected_radius * 0.35))))
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+    binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
+
+    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(binary)
+    candidates: list[tuple[float, float, float, float, float]] = []
+    for label in range(1, num_labels):
+        area = float(stats[label, cv2.CC_STAT_AREA])
+        if area < 6:
+            continue
+        cx, cy = centroids[label]
+        distance_penalty = math.hypot(cx - roi_center_x, cy - roi_center_y)
+        radius_est = math.sqrt(area / math.pi)
+        radius_penalty = abs(radius_est - (expected_radius * 0.45))
+        darkness_support = float(darkness[labels == label].mean())
+        score = darkness_support * 2.0 - distance_penalty - radius_penalty
+        candidates.append((score, float(cx), float(cy), area, darkness_support))
+
+    if candidates:
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        _, approx_x, approx_y, area, darkness_support = candidates[0]
+        approx_local = (approx_x, approx_y)
+        refined_local = refine_centroid(darkness, approx_local, max(2, refine_radius))
+        outline_radius = max(3.0, math.sqrt(area / math.pi))
+        contrast = float(darkness_support - np.percentile(masked_values, 25))
+    else:
+        _, _, _, max_loc = cv2.minMaxLoc(darkness)
+        approx_local = (float(max_loc[0]), float(max_loc[1]))
+        refined_local = refine_centroid(darkness, approx_local, max(2, refine_radius))
+        local_patch, _, _ = crop_square(darkness, refined_local, max(3, refine_radius))
+        if local_patch.size == 0:
+            raise RuntimeError("Dark-center refinement region is empty.")
+        outline_radius = max(3.0, expected_radius * 0.35)
+        contrast = float(local_patch.max() - np.percentile(masked_values, 25))
+
+    if contrast < min_contrast:
+        raise RuntimeError(
+            f"Lost particle: dark-center contrast {contrast:.2f} is below "
+            f"the threshold {min_contrast:.2f}."
+        )
+
+    center = (refined_local[0] + x_min, refined_local[1] + y_min)
+    diagnostics = {
+        "match_score": float(min(1.0, contrast / max(min_contrast * 4.0, 1.0))),
+        "contrast": contrast,
+        "radius": float(expected_radius),
+        "arc_angle_deg": float("nan"),
+        "previous_x": float(previous_point[0]),
+        "previous_y": float(previous_point[1]),
+        "center_x": float(center[0]),
+        "center_y": float(center[1]),
+        "search_x0": float(x_min),
+        "search_y0": float(y_min),
+        "search_x1": float(x_min + search_roi.shape[1] - 1),
+        "search_y1": float(y_min + search_roi.shape[0] - 1),
+        "outline_radius": float(outline_radius),
+    }
+    return center, float(outline_radius), diagnostics
+
+
+def make_skipped_diagnostics(
+    previous_point: Point,
+    expected_radius: float,
+    roi_radius: int,
+    image_shape: tuple[int, int],
+    mode_name: str,
+    reason: str,
+) -> dict[str, Any]:
+    x0, y0, x1, y1 = rect_bounds(previous_point, roi_radius, image_shape)
+    return {
+        "match_score": 0.0,
+        "contrast": float("nan"),
+        "radius": float(expected_radius),
+        "arc_angle_deg": float("nan"),
+        "previous_x": float(previous_point[0]),
+        "previous_y": float(previous_point[1]),
+        "center_x": float(previous_point[0]),
+        "center_y": float(previous_point[1]),
+        "search_x0": x0,
+        "search_y0": y0,
+        "search_x1": x1,
+        "search_y1": y1,
+        "outline_radius": float(expected_radius),
+        "mode_name": mode_name,
+        "selection_mode": "full",
+        "radius_locked": 1.0,
+        "skipped": 1.0,
+        "skip_reason": reason,
+    }
 
 
 def detect_particles(
@@ -457,6 +583,7 @@ def track_selected_particles(
     min_match_score: float = 0.35,
     min_contrast: float = 10.0,
     tracking_mode: TrackingMode = "auto",
+    skip_low_contrast_dark_center: bool = False,
 ) -> Tuple[np.ndarray, list[list[dict[str, Any]]]]:
     if not seed_points:
         raise RuntimeError("No particles were selected for tracking.")
@@ -474,28 +601,54 @@ def track_selected_particles(
         raise RuntimeError("seed_arc_angles must match the number of selected particles.")
     resolved_modes: list[TrackingMode] = []
     templates: list[np.ndarray] = []
+    initial_points: list[Point] = []
+    initial_radii: list[float] = []
     for point, radius in zip(seed_points, seed_radii):
         mode = tracking_mode
         if mode == "auto":
             mode = infer_tracking_mode(gray_frames[0], point, max(3, int(round(radius))))
         resolved_modes.append(mode)
+        template_center = point
+        template_radius = max(3, int(round(radius)))
+        if mode == "dark_center":
+            try:
+                fitted_center, fitted_radius, _ = fit_dark_center(
+                    gray_frame=gray_frames[0],
+                    previous_point=point,
+                    expected_radius=float(radius),
+                    roi_radius=max(roi_radius, int(round(radius * 1.8))),
+                    blur_size=blur_size,
+                    refine_radius=refine_radius,
+                    min_contrast=max(1.0, min_contrast * 0.5),
+                )
+                template_center = fitted_center
+                template_radius = max(3, int(round(fitted_radius * 1.5)))
+                initial_points.append((float(fitted_center[0]), float(fitted_center[1])))
+                initial_radii.append(float(fitted_radius))
+            except RuntimeError:
+                initial_points.append((float(point[0]), float(point[1])))
+                initial_radii.append(max(3.0, float(radius) * 0.4))
+        else:
+            initial_points.append((float(point[0]), float(point[1])))
+            initial_radii.append(float(radius))
+
         raw_template = extract_template(
-            gray_frames[0], point, max(3, int(round(radius))), blur_size
+            gray_frames[0], template_center, template_radius, blur_size
         )
         templates.append(preprocess_tracking_image(raw_template, blur_size, mode))
 
-    tracks: List[List[Point]] = [[(float(x), float(y)) for x, y in seed_points]]
+    tracks: List[List[Point]] = [initial_points.copy()]
     frame_shape = gray_frames[0].shape
     diagnostics: list[list[dict[str, Any]]] = [[]]
-    for index, point in enumerate(seed_points):
-        radius = float(seed_radii[index])
+    for index, point in enumerate(initial_points):
+        radius = float(initial_radii[index])
         arc_angle = seed_arc_angles[index]
         x0, y0, x1, y1 = rect_bounds(point, roi_radius, frame_shape)
         diagnostics[0].append(
             {
                 "match_score": 1.0,
                 "contrast": float("nan"),
-                "mode": 1.0 if resolved_modes[index] == "ring" else 0.0,
+                "mode": 1.0 if resolved_modes[index] == "ring" else (0.5 if resolved_modes[index] == "dark_center" else 0.0),
                 "mode_name": resolved_modes[index],
                 "previous_x": float(point[0]),
                 "previous_y": float(point[1]),
@@ -509,11 +662,13 @@ def track_selected_particles(
                 "radius": radius,
                 "arc_angle_deg": float(arc_angle) if arc_angle is not None else float("nan"),
                 "selection_mode": "arc" if arc_angle is not None else "full",
+                "skipped": 0.0,
+                "skip_reason": "",
             }
         )
 
-    previous_points = [(float(x), float(y)) for x, y in seed_points]
-    current_radii = [float(radius) for radius in seed_radii]
+    previous_points = initial_points.copy()
+    current_radii = initial_radii.copy()
     current_arc_angles = list(seed_arc_angles)
 
     for frame_index, gray in enumerate(gray_frames[1:], start=1):
@@ -538,6 +693,39 @@ def track_selected_particles(
                         "arc" if current_arc_angles[particle_index] is not None else "full"
                     )
                     next_radii.append(fitted_radius)
+                elif resolved_modes[particle_index] == "dark_center":
+                    try:
+                        refined, diag = localize_particle(
+                            gray_frame=gray,
+                            previous_point=prev_point,
+                            template=templates[particle_index],
+                            tracking_mode=resolved_modes[particle_index],
+                            roi_radius=max(roi_radius, int(round(current_radii[particle_index] * 2.0))),
+                            blur_size=blur_size,
+                            refine_radius=refine_radius,
+                            min_match_score=min_match_score,
+                            min_contrast=min_contrast,
+                        )
+                        diag["mode"] = 0.5
+                        diag["mode_name"] = "dark_center"
+                        diag["selection_mode"] = "full"
+                        diag["outline_radius"] = float(current_radii[particle_index])
+                        diag["skipped"] = 0.0
+                        next_radii.append(current_radii[particle_index])
+                    except RuntimeError as exc:
+                        if not skip_low_contrast_dark_center or "contrast" not in str(exc).lower():
+                            raise
+                        refined = prev_point
+                        diag = make_skipped_diagnostics(
+                            previous_point=prev_point,
+                            expected_radius=current_radii[particle_index],
+                            roi_radius=max(roi_radius, int(round(current_radii[particle_index] * 2.0))),
+                            image_shape=gray.shape,
+                            mode_name="dark_center",
+                            reason=str(exc),
+                        )
+                        diag["mode"] = 0.5
+                        next_radii.append(current_radii[particle_index])
                 else:
                     refined, diag = localize_particle(
                         gray_frame=gray,
@@ -553,6 +741,7 @@ def track_selected_particles(
                     diag["mode_name"] = resolved_modes[particle_index]
                     diag["selection_mode"] = "full"
                     diag["radius"] = current_radii[particle_index]
+                    diag["skipped"] = 0.0
                     next_radii.append(current_radii[particle_index])
                 diag["radius"] = next_radii[-1]
             except RuntimeError as exc:

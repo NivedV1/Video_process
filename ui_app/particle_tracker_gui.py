@@ -61,8 +61,10 @@ class ParticleTrackerApp:
         self.roi_radius_var = tk.StringVar(value="20")
         self.template_radius_var = tk.StringVar(value="8")
         self.match_threshold_var = tk.StringVar(value="0.35")
+        self.contrast_threshold_var = tk.StringVar(value="10.0")
         self.tracking_mode_var = tk.StringVar(value="Auto")
         self.selection_mode_var = tk.StringVar(value="Full circle")
+        self.skip_low_contrast_var = tk.BooleanVar(value=True)
         self.status_var = tk.StringVar(value="Load a video to begin.")
         self.show_search_var = tk.BooleanVar(value=True)
         self.show_outline_var = tk.BooleanVar(value=True)
@@ -118,25 +120,34 @@ class ParticleTrackerApp:
         ttk.Entry(controls, textvariable=self.match_threshold_var, width=12).grid(
             row=3, column=1, sticky="w", padx=(6, 6)
         )
-        ttk.Label(controls, text="Particle type").grid(row=3, column=2, sticky="e")
+        ttk.Label(controls, text="Contrast threshold").grid(row=3, column=2, sticky="e")
+        ttk.Entry(controls, textvariable=self.contrast_threshold_var, width=12).grid(
+            row=3, column=3, sticky="w", padx=(6, 0)
+        )
+        ttk.Label(controls, text="Particle type").grid(row=4, column=0, sticky="w")
         ttk.Combobox(
             controls,
             textvariable=self.tracking_mode_var,
-            values=("Auto", "Bright spot", "Ring / hollow"),
+            values=("Auto", "Bright spot", "Ring / hollow", "White ring / dark center"),
             state="readonly",
-            width=14,
-        ).grid(row=3, column=3, sticky="w", padx=(6, 0))
-        ttk.Label(controls, text="Selection").grid(row=4, column=0, sticky="w")
+            width=22,
+        ).grid(row=4, column=1, sticky="w", padx=(6, 6))
+        ttk.Label(controls, text="Selection").grid(row=4, column=2, sticky="e")
         ttk.Combobox(
             controls,
             textvariable=self.selection_mode_var,
             values=("Full circle", "Half circle / arc"),
             state="readonly",
             width=14,
-        ).grid(row=4, column=1, sticky="w", padx=(6, 6))
+        ).grid(row=4, column=3, sticky="w", padx=(6, 0))
+        ttk.Checkbutton(
+            controls,
+            text="Skip low-contrast dark-center frames",
+            variable=self.skip_low_contrast_var,
+        ).grid(row=5, column=0, columnspan=4, sticky="w", pady=(6, 0))
 
         action_bar = ttk.Frame(controls)
-        action_bar.grid(row=5, column=0, columnspan=4, sticky="ew", pady=(8, 0))
+        action_bar.grid(row=6, column=0, columnspan=4, sticky="ew", pady=(8, 0))
         action_bar.columnconfigure(5, weight=1)
 
         self.undo_button = ttk.Button(action_bar, text="Undo Last", command=self.undo_last)
@@ -306,7 +317,9 @@ class ParticleTrackerApp:
             f"Frames: {len(frames)}\n"
             f"FPS: {fps:.3f}\n\n"
             "Draw one circle around each particle in the first frame.\n"
-            "For overlapping rings, switch Selection to Half circle / arc and drag toward the clean side of the ring."
+            "For overlapping rings, switch Selection to Half circle / arc and drag toward the clean side of the ring.\n"
+            "For hollow particles with a dark center, choose White ring / dark center.\n"
+            "If dark-center tracking fails, lower Contrast threshold."
         )
         self.status_var.set("Video loaded. Draw circles around particles in order.")
         self._update_buttons()
@@ -499,12 +512,13 @@ class ParticleTrackerApp:
 
             if self.show_outline_var.get():
                 radius = float(diag["outline_radius"]) * self.display_scale
+                outline_color = "#ff6666" if float(diag.get("skipped", 0.0)) > 0.5 else color
                 self.canvas.create_oval(
                     cx - radius,
                     cy - radius,
                     cx + radius,
                     cy + radius,
-                    outline=color,
+                    outline=outline_color,
                     width=2,
                 )
                 arc_angle = float(diag["arc_angle_deg"])
@@ -517,13 +531,14 @@ class ParticleTrackerApp:
                         start=arc_angle - 90.0,
                         extent=180.0,
                         style=tk.ARC,
-                        outline=color,
+                        outline=outline_color,
                         width=3,
                     )
 
             if self.show_center_var.get():
-                self.canvas.create_line(cx - 5, cy, cx + 5, cy, fill=color, width=2)
-                self.canvas.create_line(cx, cy - 5, cx, cy + 5, fill=color, width=2)
+                center_color = "#ff6666" if float(diag.get("skipped", 0.0)) > 0.5 else color
+                self.canvas.create_line(cx - 5, cy, cx + 5, cy, fill=center_color, width=2)
+                self.canvas.create_line(cx, cy - 5, cx, cy + 5, fill=center_color, width=2)
 
             self.canvas.create_text(
                 cx + 8,
@@ -541,11 +556,15 @@ class ParticleTrackerApp:
         time_s = frame_index / self.fps if self.fps else 0.0
         lines = [f"Frame {frame_index + 1} at {time_s:.4f} s"]
         for particle_index, diag in enumerate(self.diagnostics[frame_index], start=1):
+            skipped = float(diag.get("skipped", 0.0)) > 0.5
+            suffix = " [skipped]" if skipped else ""
             lines.append(
                 f"p{particle_index}: center=({float(diag['center_x']):.2f}, {float(diag['center_y']):.2f}) px, "
                 f"score={float(diag['match_score']):.3f}, "
-                f"mode={diag.get('mode_name', 'unknown')}"
+                f"mode={diag.get('mode_name', 'unknown')}{suffix}"
             )
+            if skipped and diag.get("skip_reason"):
+                lines.append(f"  reason: {diag['skip_reason']}")
         return "\n".join(lines)
 
     def _on_slider_change(self, value: str) -> None:
@@ -772,10 +791,14 @@ class ParticleTrackerApp:
             match_threshold = self._read_positive_float(
                 self.match_threshold_var.get(), "Match threshold"
             )
+            contrast_threshold = self._read_positive_float(
+                self.contrast_threshold_var.get(), "Contrast threshold"
+            )
             tracking_mode = {
                 "Auto": "auto",
                 "Bright spot": "bright",
                 "Ring / hollow": "ring",
+                "White ring / dark center": "dark_center",
             }[self.tracking_mode_var.get()]
         except RuntimeError as exc:
             messagebox.showerror("Invalid settings", str(exc))
@@ -796,8 +819,9 @@ class ParticleTrackerApp:
                 blur_size=5,
                 refine_radius=max(3, template_radius // 2),
                 min_match_score=match_threshold,
-                min_contrast=10.0,
+                min_contrast=contrast_threshold,
                 tracking_mode=tracking_mode,
+                skip_low_contrast_dark_center=self.skip_low_contrast_var.get(),
             )
         except Exception as exc:
             self.tracks = None
