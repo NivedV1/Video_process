@@ -593,7 +593,10 @@ class ParticleTrackerApp:
     def on_canvas_press(self, event: tk.Event[tk.Misc]) -> None:
         if not self.frames or (self.tracks is not None and self.diagnostics is not None):
             return
-        self.drag_start = (event.x / self.display_scale, event.y / self.display_scale)
+        start = self._to_image_coords(event.x, event.y)
+        if start is None:
+            return
+        self.drag_start = start
         if self.preview_circle_id is not None:
             self.canvas.delete(self.preview_circle_id)
             self.preview_circle_id = None
@@ -606,11 +609,12 @@ class ParticleTrackerApp:
         ):
             return
         start_x, start_y = self.drag_start
-        end_x = event.x / self.display_scale
-        end_y = event.y / self.display_scale
+        end = self._to_image_coords(event.x, event.y, clamp=True)
+        if end is None:
+            return
+        end_x, end_y = end
         radius = max(2.0, float(np.hypot(end_x - start_x, end_y - start_y)))
-        cx = start_x * self.display_scale
-        cy = start_y * self.display_scale
+        cx, cy = self._to_canvas_coords(start_x, start_y)
         draw_radius = radius * self.display_scale
         angle = float(np.degrees(np.arctan2(-(end_y - start_y), end_x - start_x)))
         if self.preview_circle_id is not None:
@@ -647,8 +651,10 @@ class ParticleTrackerApp:
         ):
             return
         start_x, start_y = self.drag_start
-        end_x = event.x / self.display_scale
-        end_y = event.y / self.display_scale
+        end = self._to_image_coords(event.x, event.y, clamp=True)
+        if end is None:
+            return
+        end_x, end_y = end
         radius = max(2.0, float(np.hypot(end_x - start_x, end_y - start_y)))
         arc_angle = None
         if self.selection_mode_var.get() == "Half circle / arc":
