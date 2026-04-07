@@ -472,27 +472,26 @@ class ParticleTrackerApp:
             color = self._particle_color(particle_index)
             diag = self.diagnostics[frame_index][particle_index]
             center = self.tracks[frame_index, particle_index]
-            cx = float(center[0]) * self.display_scale
-            cy = float(center[1]) * self.display_scale
+            cx, cy = self._to_canvas_coords(float(center[0]), float(center[1]))
 
             if self.show_path_var.get():
                 points = []
                 for path_point in self.tracks[: frame_index + 1, particle_index]:
+                    px, py = self._to_canvas_coords(float(path_point[0]), float(path_point[1]))
                     points.extend(
-                        [
-                            float(path_point[0]) * self.display_scale,
-                            float(path_point[1]) * self.display_scale,
-                        ]
+                        [px, py]
                     )
                 if len(points) >= 4:
                     self.canvas.create_line(*points, fill=color, width=2, smooth=True)
 
             if self.show_search_var.get():
+                x0, y0 = self._to_canvas_coords(float(diag["search_x0"]), float(diag["search_y0"]))
+                x1, y1 = self._to_canvas_coords(float(diag["search_x1"]), float(diag["search_y1"]))
                 self.canvas.create_rectangle(
-                    float(diag["search_x0"]) * self.display_scale,
-                    float(diag["search_y0"]) * self.display_scale,
-                    float(diag["search_x1"]) * self.display_scale,
-                    float(diag["search_y1"]) * self.display_scale,
+                    x0,
+                    y0,
+                    x1,
+                    y1,
                     outline=color,
                     dash=(5, 3),
                     width=2,
