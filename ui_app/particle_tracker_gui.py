@@ -6,12 +6,17 @@ Semi-manual GUI for particle tracking and trap stiffness estimation.
 from __future__ import annotations
 
 import math
+import sys
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 import cv2
 import numpy as np
+
+ANALYSIS_DIR = Path(__file__).resolve().parent.parent / "analysis_tools"
+if str(ANALYSIS_DIR) not in sys.path:
+    sys.path.insert(0, str(ANALYSIS_DIR))
 
 from particle_tracking_core import (
     build_output_table,
@@ -42,10 +47,13 @@ class ParticleTrackerApp:
         self.output_headers: list[str] | None = None
         self.stiffness_results: list[dict[str, float]] = []
         self.display_scale = 1.0
+        self.image_offset = (0.0, 0.0)
+        self.displayed_image_size = (1, 1)
         self.tk_image: tk.PhotoImage | None = None
         self.drag_start: tuple[float, float] | None = None
         self.preview_circle_id: int | None = None
         self.play_job: str | None = None
+        self.resize_job: str | None = None
 
         self.video_var = tk.StringVar()
         self.pixel_size_var = tk.StringVar(value="1.0")
@@ -151,6 +159,7 @@ class ParticleTrackerApp:
 
         self.canvas = tk.Canvas(viewer_frame, background="black", highlightthickness=0)
         self.canvas.grid(row=0, column=0, sticky="nsew")
+        self.canvas.bind("<Configure>", self._on_canvas_resize)
         self.canvas.bind("<ButtonPress-1>", self.on_canvas_press)
         self.canvas.bind("<B1-Motion>", self.on_canvas_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_canvas_release)
@@ -309,25 +318,36 @@ class ParticleTrackerApp:
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
         height, width = rgb.shape[:2]
-        scale = min(MAX_DISPLAY_SIZE / max(width, 1), MAX_DISPLAY_SIZE / max(height, 1), 1.0)
+        canvas_width = max(1, self.canvas.winfo_width())
+        canvas_height = max(1, self.canvas.winfo_height())
+        target_width = canvas_width if canvas_width > 1 else MAX_DISPLAY_SIZE
+        target_height = canvas_height if canvas_height > 1 else MAX_DISPLAY_SIZE
+        scale = min(target_width / max(width, 1), target_height / max(height, 1))
         scaled_width = max(1, int(round(width * scale)))
         scaled_height = max(1, int(round(height * scale)))
         if scale != 1.0:
-            rgb = cv2.resize(rgb, (scaled_width, scaled_height), interpolation=cv2.INTER_AREA)
+            interpolation = cv2.INTER_CUBIC if scale > 1.0 else cv2.INTER_AREA
+            rgb = cv2.resize(rgb, (scaled_width, scaled_height), interpolation=interpolation)
 
         self.display_scale = scale
+        self.displayed_image_size = (scaled_width, scaled_height)
+        self.image_offset = (
+            max(0.0, (target_width - scaled_width) / 2.0),
+            max(0.0, (target_height - scaled_height) / 2.0),
+        )
         ppm_header = f"P6 {scaled_width} {scaled_height} 255 ".encode("ascii")
         ppm_data = ppm_header + rgb.astype(np.uint8).tobytes()
         return tk.PhotoImage(data=ppm_data, format="PPM")
 
     def _display_frame(self, frame: np.ndarray, draw_seeds: bool = True) -> None:
         self.tk_image = self._frame_to_photoimage(frame)
-        self.canvas.configure(
-            width=self.tk_image.width(),
-            height=self.tk_image.height(),
-        )
         self.canvas.delete("all")
-        self.canvas.create_image(0, 0, anchor="nw", image=self.tk_image)
+        self.canvas.create_image(
+            self.image_offset[0],
+            self.image_offset[1],
+            anchor="nw",
+            image=self.tk_image,
+        )
         if draw_seeds:
             self._draw_seed_markers()
 
@@ -342,12 +362,52 @@ class ParticleTrackerApp:
         ]
         return colors[particle_index % len(colors)]
 
+    def _to_canvas_coords(self, x: float, y: float) -> tuple[float, float]:
+        return (
+            self.image_offset[0] + (x * self.display_scale),
+            self.image_offset[1] + (y * self.display_scale),
+        )
+
+    def _to_image_coords(
+        self,
+        canvas_x: float,
+        canvas_y: float,
+        clamp: bool = False,
+    ) -> tuple[float, float] | None:
+        if not self.frames:
+            return None
+
+        frame_height, frame_width = self.frames[0].shape[:2]
+        image_x = (canvas_x - self.image_offset[0]) / self.display_scale
+        image_y = (canvas_y - self.image_offset[1]) / self.display_scale
+        if clamp:
+            image_x = min(max(image_x, 0.0), max(0.0, frame_width - 1.0))
+            image_y = min(max(image_y, 0.0), max(0.0, frame_height - 1.0))
+            return image_x, image_y
+
+        if 0.0 <= image_x < frame_width and 0.0 <= image_y < frame_height:
+            return image_x, image_y
+        return None
+
+    def _on_canvas_resize(self, _event: tk.Event[tk.Misc]) -> None:
+        if self.resize_job is not None:
+            self.root.after_cancel(self.resize_job)
+        self.resize_job = self.root.after(75, self._handle_canvas_resize)
+
+    def _handle_canvas_resize(self) -> None:
+        self.resize_job = None
+        if not self.frames:
+            return
+        if self.tracks is not None and self.diagnostics is not None:
+            self._render_processed_frame(self.frame_index_var.get())
+        else:
+            self._display_frame(self.frames[0])
+
     def _draw_seed_markers(self) -> None:
         for idx, ((x, y), radius_px, arc_angle) in enumerate(
             zip(self.seed_points, self.seed_radii, self.seed_arc_angles), start=1
         ):
-            cx = x * self.display_scale
-            cy = y * self.display_scale
+            cx, cy = self._to_canvas_coords(x, y)
             radius = max(6.0, radius_px * self.display_scale)
             if arc_angle is None:
                 self.canvas.create_oval(

@@ -1,0 +1,499 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Trap Stiffness Calculation: Physics Explanation</title>
+  <style>
+    :root {
+      --bg: #f5f1e8;
+      --paper: #fffdf8;
+      --ink: #1d2430;
+      --muted: #5e6776;
+      --accent: #0b6e4f;
+      --accent-soft: #dcefe8;
+      --rule: #d8d1c2;
+      --math: #102a43;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: Georgia, "Times New Roman", serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top left, #f7ead2 0, transparent 28%),
+        radial-gradient(circle at top right, #ddeee7 0, transparent 24%),
+        linear-gradient(180deg, #f4efe4 0%, #efe7d9 100%);
+      line-height: 1.65;
+    }
+
+    .page {
+      max-width: 980px;
+      margin: 32px auto;
+      padding: 40px 48px 60px;
+      background: var(--paper);
+      border: 1px solid rgba(0, 0, 0, 0.06);
+      box-shadow: 0 18px 50px rgba(30, 40, 60, 0.10);
+    }
+
+    h1, h2, h3 {
+      font-family: "Cambria", Georgia, serif;
+      line-height: 1.2;
+      color: #16202a;
+    }
+
+    h1 {
+      font-size: 2.3rem;
+      margin: 0 0 10px;
+    }
+
+    h2 {
+      font-size: 1.45rem;
+      margin-top: 2.3rem;
+      padding-top: 0.8rem;
+      border-top: 1px solid var(--rule);
+    }
+
+    h3 {
+      font-size: 1.1rem;
+      margin-top: 1.5rem;
+    }
+
+    p, li {
+      font-size: 1.04rem;
+    }
+
+    .lead {
+      font-size: 1.1rem;
+      color: var(--muted);
+      margin-bottom: 1.6rem;
+    }
+
+    .note {
+      background: #fff7da;
+      border-left: 4px solid #d49c1d;
+      padding: 14px 16px;
+      margin: 18px 0;
+    }
+
+    .summary {
+      background: var(--accent-soft);
+      border-left: 4px solid var(--accent);
+      padding: 16px 18px;
+      margin: 20px 0;
+    }
+
+    .equation {
+      margin: 14px 0;
+      color: var(--math);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 18px;
+      margin: 18px 0;
+    }
+
+    .card {
+      border: 1px solid var(--rule);
+      padding: 14px;
+      background: #fff;
+    }
+
+    figure {
+      margin: 20px 0;
+      padding: 14px;
+      border: 1px solid var(--rule);
+      background: #fff;
+    }
+
+    figcaption {
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+
+    svg {
+      width: 100%;
+      height: auto;
+      display: block;
+    }
+
+    .axis { stroke: #3d4957; stroke-width: 2; }
+    .gridline { stroke: #d9dee7; stroke-width: 1; }
+    .curve { fill: none; stroke: #0b6e4f; stroke-width: 3; }
+    .curve2 { fill: none; stroke: #9b2226; stroke-width: 3; }
+    .curve3 { fill: rgba(11, 110, 79, 0.10); stroke: #0b6e4f; stroke-width: 3; }
+    .label {
+      font-family: Georgia, serif;
+      font-size: 15px;
+      fill: #223041;
+    }
+
+    code {
+      background: #eef2f7;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.95em;
+    }
+
+    blockquote {
+      margin: 18px 0;
+      padding: 10px 16px;
+      border-left: 4px solid var(--accent);
+      color: #2d3748;
+      background: #f8fbfa;
+    }
+
+    @media (max-width: 720px) {
+      .page {
+        margin: 0;
+        padding: 24px 20px 40px;
+        border: none;
+        box-shadow: none;
+      }
+
+      h1 {
+        font-size: 1.8rem;
+      }
+    }
+  </style>
+  <script>
+    window.MathJax = {
+      tex: {
+        inlineMath: [['\\(', '\\)']],
+        displayMath: [['\\[', '\\]']]
+      },
+      svg: {
+        fontCache: 'global'
+      }
+    };
+  </script>
+  <script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js"></script>
+</head>
+<body>
+  <main class="page">
+    <h1>Trap Stiffness Calculation: Physics Explanation</h1>
+    <p class="lead">
+      This document explains how the GUI estimates trap stiffness from tracked particle motion,
+      using the underlying physics rather than the implementation details.
+    </p>
+
+    <h2>1. Physical Model Behind the Calculation</h2>
+    <p>
+      The GUI assumes that, near the trap center, the trapping potential is approximately harmonic
+      along each Cartesian direction:
+    </p>
+    <div class="equation">
+      \[
+      U(x) = \frac{1}{2} k_x x^2, \qquad U(y) = \frac{1}{2} k_y y^2
+      \]
+    </div>
+    <p>where:</p>
+    <ul>
+      <li>\(x\) and \(y\) are the particle displacements from the trap center</li>
+      <li>\(k_x\) and \(k_y\) are the trap stiffnesses along the two axes</li>
+    </ul>
+    <p>
+      For a Brownian particle in thermal equilibrium, the equipartition theorem gives:
+    </p>
+    <div class="equation">
+      \[
+      \frac{1}{2} k_x \langle x^2 \rangle = \frac{1}{2} k_B T
+      \]
+    </div>
+    <p>and similarly for \(y\):</p>
+    <div class="equation">
+      \[
+      \frac{1}{2} k_y \langle y^2 \rangle = \frac{1}{2} k_B T
+      \]
+    </div>
+    <p>So the stiffness estimate is:</p>
+    <div class="equation">
+      \[
+      k_x = \frac{k_B T}{\langle x^2 \rangle}, \qquad
+      k_y = \frac{k_B T}{\langle y^2 \rangle}
+      \]
+    </div>
+
+    <h2>2. What the GUI Measures First</h2>
+    <p>The GUI tracks the particle center in each video frame and produces a time series:</p>
+    <div class="equation">
+      \[
+      x_i,\; y_i \qquad (i = 1,2,\dots,N)
+      \]
+    </div>
+    <p>It then computes the time-averaged position:</p>
+    <div class="equation">
+      \[
+      \bar{x} = \frac{1}{N}\sum_{i=1}^N x_i, \qquad
+      \bar{y} = \frac{1}{N}\sum_{i=1}^N y_i
+      \]
+    </div>
+    <p>and defines the fluctuation coordinates:</p>
+    <div class="equation">
+      \[
+      \Delta x_i = x_i - \bar{x}, \qquad
+      \Delta y_i = y_i - \bar{y}
+      \]
+    </div>
+    <p>These are the quantities stored in output columns such as <code>p1_dx</code>, <code>p1_dy</code>, <code>p2_dx</code>, and <code>p2_dy</code>.</p>
+    <p>So the stiffness is inferred from fluctuations around the mean, not from the absolute position itself.</p>
+
+    <h2>3. Variance Used by the App</h2>
+    <p>For each displacement column, the app computes the sample variance:</p>
+    <div class="equation">
+      \[
+      s_x^2 = \frac{1}{N-1}\sum_{i=1}^N (\Delta x_i)^2
+      \]
+    </div>
+    <div class="equation">
+      \[
+      s_y^2 = \frac{1}{N-1}\sum_{i=1}^N (\Delta y_i)^2
+      \]
+    </div>
+    <p>It then applies equipartition in the form:</p>
+    <div class="equation">
+      \[
+      k = \frac{k_B T}{s^2}
+      \]
+    </div>
+    <p>provided that \(s^2\) is expressed in units of \(\mathrm{m}^2\).</p>
+    <p>The Boltzmann constant used by the app is:</p>
+    <div class="equation">
+      \[
+      k_B = 1.380649 \times 10^{-23}\ \mathrm{J/K}
+      \]
+    </div>
+    <p>and the GUI converts Celsius to Kelvin using:</p>
+    <div class="equation">
+      \[
+      T(\mathrm{K}) = T(^{\circ}\mathrm{C}) + 273.15
+      \]
+    </div>
+
+    <h2>4. Conceptual Flow of the Calculation</h2>
+    <div class="grid">
+      <div class="card">Video frames</div>
+      <div class="card">Track particle center in each frame</div>
+      <div class="card">Obtain \(x(t)\), \(y(t)\)</div>
+      <div class="card">Subtract time-mean position</div>
+      <div class="card">Compute variance of \(dx\) and \(dy\)</div>
+      <div class="card">Apply \(k = k_B T / \text{variance}\)</div>
+      <div class="card">Report stiffness in N/m, pN/\(\mu\)m, pN/nm</div>
+    </div>
+
+    <h2>5. What the Trap Looks Like Mathematically</h2>
+    <p>The estimate assumes the particle explores only the approximately parabolic part of the trapping potential:</p>
+    <div class="equation">
+      \[
+      U(x) \propto x^2
+      \]
+    </div>
+    <p>so force is linear in displacement:</p>
+    <div class="equation">
+      \[
+      F_x = -\frac{dU}{dx} = -k_x x
+      \]
+    </div>
+    <p>That is just Hooke's law for the local trap response.</p>
+
+    <figure>
+      <svg viewBox="0 0 500 280" aria-label="Harmonic trap potential graph">
+        <line class="gridline" x1="70" y1="40" x2="70" y2="230"></line>
+        <line class="gridline" x1="70" y1="230" x2="450" y2="230"></line>
+        <line class="axis" x1="70" y1="230" x2="450" y2="230"></line>
+        <line class="axis" x1="260" y1="250" x2="260" y2="30"></line>
+        <path class="curve" d="M100 70 Q260 230 420 70"></path>
+        <text class="label" x="435" y="248">x</text>
+        <text class="label" x="240" y="48">U(x)</text>
+        <text class="label" x="150" y="28">Harmonic Trap Potential</text>
+      </svg>
+      <figcaption>
+        A harmonic trap has a quadratic potential well. A steeper well corresponds to a larger stiffness.
+      </figcaption>
+    </figure>
+
+    <figure>
+      <svg viewBox="0 0 500 280" aria-label="Linear restoring force graph">
+        <line class="axis" x1="70" y1="140" x2="450" y2="140"></line>
+        <line class="axis" x1="260" y1="250" x2="260" y2="30"></line>
+        <path class="curve2" d="M110 60 L410 220"></path>
+        <text class="label" x="435" y="158">x</text>
+        <text class="label" x="220" y="48">F(x)</text>
+        <text class="label" x="130" y="28">Linear Restoring Force</text>
+      </svg>
+      <figcaption>
+        The local restoring force is linear in displacement: \(F_x = -k_x x\).
+      </figcaption>
+    </figure>
+
+    <p>A stiffer trap means:</p>
+    <ul>
+      <li>steeper potential well</li>
+      <li>larger restoring force for the same displacement</li>
+      <li>smaller thermal positional variance</li>
+    </ul>
+    <div class="equation">
+      \[
+      \text{larger } k \;\Longleftrightarrow\; \text{smaller } \langle x^2 \rangle
+      \]
+    </div>
+
+    <h2>6. Why Variance Is Enough</h2>
+    <p>At thermal equilibrium, the one-dimensional probability density is Gaussian:</p>
+    <div class="equation">
+      \[
+      P(x) \propto \exp\left(-\frac{U(x)}{k_B T}\right)
+      = \exp\left(-\frac{k x^2}{2k_B T}\right)
+      \]
+    </div>
+    <p>which is a normal distribution with variance:</p>
+    <div class="equation">
+      \[
+      \sigma_x^2 = \frac{k_B T}{k_x}
+      \]
+    </div>
+    <p>So the width of the displacement distribution directly gives the stiffness.</p>
+
+    <figure>
+      <svg viewBox="0 0 500 280" aria-label="Gaussian displacement distribution graph">
+        <line class="axis" x1="70" y1="230" x2="450" y2="230"></line>
+        <line class="axis" x1="260" y1="240" x2="260" y2="40"></line>
+        <path class="curve3" d="M90 225 C150 220, 180 160, 220 95 C238 70, 248 58, 260 55 C272 58, 282 70, 300 95 C340 160, 370 220, 430 225 L430 230 L90 230 Z"></path>
+        <text class="label" x="435" y="248">x</text>
+        <text class="label" x="208" y="42">P(x)</text>
+        <text class="label" x="120" y="28">Displacement Distribution</text>
+      </svg>
+      <figcaption>
+        Narrower thermal fluctuation distributions correspond to larger stiffness.
+      </figcaption>
+    </figure>
+
+    <h2>7. Units Reported by the GUI</h2>
+    <p>The app reports stiffness in:</p>
+    <ul>
+      <li><code>N/m</code></li>
+      <li><code>pN/um</code></li>
+      <li><code>pN/nm</code></li>
+    </ul>
+    <p>Useful conversions:</p>
+    <div class="equation">
+      \[
+      1\ \mathrm{N/m} = 10^6\ \mathrm{pN}/\mu\mathrm{m}
+      \]
+    </div>
+    <div class="equation">
+      \[
+      1\ \mathrm{pN}/\mu\mathrm{m} = 10^{-3}\ \mathrm{pN}/\mathrm{nm}
+      \]
+    </div>
+
+    <h2>8. What Is Axis-Specific in This App</h2>
+    <p>The app computes stiffness separately for every displacement column:</p>
+    <ul>
+      <li><code>p1_dx</code> gives an \(x\)-direction stiffness estimate for particle 1</li>
+      <li><code>p1_dy</code> gives a \(y\)-direction stiffness estimate for particle 1</li>
+    </ul>
+    <p>This means the result is effectively:</p>
+    <div class="equation">
+      \[
+      k_x \text{ from } \Delta x(t), \qquad
+      k_y \text{ from } \Delta y(t)
+      \]
+    </div>
+    <p>So anisotropy in the trap can appear as different values in <code>dx</code> and <code>dy</code>.</p>
+
+    <h2>9. Important Unit Note About the Current Implementation</h2>
+    <p>From the current code path in this project:</p>
+    <ol>
+      <li>the tracked positions are already converted from pixels to micrometers before being written into the output table</li>
+      <li>the displacements <code>dx</code> and <code>dy</code> are therefore already in micrometers</li>
+      <li>the stiffness routine computes the variance of those columns</li>
+      <li>it then multiplies by the pixel size once more when converting variance to SI units</li>
+    </ol>
+    <p>So the current implementation behaves as if:</p>
+    <div class="equation">
+      \[
+      \text{variance in meters}^2
+      =
+      \text{variance of stored values} \times (\text{pixel size in meters})^2
+      \]
+    </div>
+    <p>even though the stored values are already in micrometers, not in pixels.</p>
+
+    <div class="note">
+      <strong>Physics-consistent form:</strong> if <code>dx</code> and <code>dy</code> are already in micrometers,
+      then the correct conversion should be
+      \[
+      s^2_{\mathrm{m}^2} = s^2_{\mu\mathrm{m}^2} \times (10^{-6})^2
+      \]
+      rather than multiplying by the pixel size again.
+    </div>
+
+    <p>So the intended method is the standard equipartition method, but the current implementation appears to contain an extra pixel-size scaling step.</p>
+
+    <h2>10. Practical Interpretation</h2>
+    <blockquote>
+      How tightly is the particle confined, based on the size of its thermal fluctuations?
+    </blockquote>
+    <p>The logic is:</p>
+    <ul>
+      <li>measure thermal motion</li>
+      <li>compute fluctuation variance</li>
+      <li>use \(k = k_B T / \langle x^2 \rangle\)</li>
+    </ul>
+    <p>In plain physical terms:</p>
+    <ul>
+      <li>large fluctuations mean a weak trap</li>
+      <li>small fluctuations mean a strong trap</li>
+    </ul>
+
+    <h2>11. Limits of the Method</h2>
+    <p>This method is reliable only if:</p>
+    <ul>
+      <li>the trap is approximately harmonic over the sampled region</li>
+      <li>the particle is close to thermal equilibrium</li>
+      <li>drift is small or removed</li>
+      <li>calibration is correct</li>
+      <li>tracking noise is much smaller than the real Brownian motion</li>
+      <li>the sampling is long enough to estimate variance well</li>
+    </ul>
+    <p>It can become misleading if:</p>
+    <ul>
+      <li>there is stage drift</li>
+      <li>the trap is strongly nonlinear</li>
+      <li>the particle is not actually trapped near a single stable minimum</li>
+      <li>camera noise or localization noise broadens the distribution</li>
+      <li>hydrodynamic or active forcing effects are significant</li>
+    </ul>
+
+    <h2>12. Short Summary</h2>
+    <div class="summary">
+      <p>
+        The stiffness calculation used by the GUI is based on equipartition:
+      </p>
+      <div class="equation">
+        \[
+        k = \frac{k_B T}{\langle (\Delta x)^2 \rangle}
+        \]
+      </div>
+      <p>
+        and similarly for \(y\), where \(\Delta x\) and \(\Delta y\) are displacements relative
+        to the time-averaged position.
+      </p>
+      <p>
+        So the app infers stiffness from the width of the Brownian fluctuation distribution:
+        narrower fluctuations imply larger stiffness.
+      </p>
+      <p>
+        One implementation detail to verify is that the displacement table is already in micrometers,
+        while the current stiffness function appears to apply pixel-size conversion again.
+      </p>
+    </div>
+  </main>
+</body>
+</html>
